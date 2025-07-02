@@ -1,0 +1,7 @@
+work
+scratch
+
+# file extensions
+*.nii.gz
+*.itksnap
+*.png

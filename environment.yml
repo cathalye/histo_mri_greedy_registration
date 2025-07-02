@@ -1,0 +1,14 @@
+name: greedy_registration
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - nibabel=5.3.2
+  - numpy=1.26.4
+  - simpleitk=2.5.2
+  - pip
+  - pip:
+    - picsl_c3d==1.4.2.2
+    - picsl_greedy==0.0.6
+    - picsl_image_graph_cut==0.0.1
