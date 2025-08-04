@@ -1,10 +1,8 @@
-import subprocess
+import os
 
 import numpy as np
 import SimpleITK as sitk
-
 from picsl_c3d import Convert3D
-from picsl_image_graph_cut import image_graph_cut
 
 c3d = Convert3D()
 
@@ -12,7 +10,7 @@ class HistologyData:
 
     def __init__(self, histology_path):
         self.histology_path = histology_path
-        self.sitk_image = sitk.ReadImage(histology_path, sitk.sitkVectorFloat32)
+        self.sitk_image = sitk.ReadImage(histology_path)
 
         # Extract metadata
         self.spacing = self.sitk_image.GetSpacing()
@@ -21,25 +19,43 @@ class HistologyData:
         self.direction = self.sitk_image.GetDirection()
 
 
-    def get_single_channel_image(self, channel=0):
+    def get_single_channel_image(self, channel=1, save_path=None, return_img=True):
         single_channel_image = sitk.VectorIndexSelectionCast(self.sitk_image, channel)
-        return single_channel_image
+
+        if save_path is not None:
+            sitk.WriteImage(single_channel_image, save_path)
+
+        if return_img:
+            return single_channel_image
+        else:
+            return None
 
 
-    def c3d_get_single_channel_image(self, channel=0):
+    def c3d_get_single_channel_image(self, channel=1, save_path=None, return_img=True):
         # TODO: ask Paul why -mcs throws an error
         # Also had the same issue with data_histo_mri_paired_png
         # used subprocess to get around it there
         c3d.push(self.sitk_image)
         c3d.execute(f'-mcs -pick {channel}')
 
-        return c3d.pop()
+        single_channel_image = c3d.pop()
+
+        if save_path is not None:
+            sitk.WriteImage(single_channel_image, save_path)
+
+        if return_img:
+            return single_channel_image
+        else:
+            return None
 
 
-    def resample_to_mri_resolution(self, spacing=[0.3, 0.3, 1.0]):
+    def resample_to_mri_resolution(self, channel=1, spacing=[0.3, 0.3, 1.0], save_path=None, return_img=True):
         # Need single channel image first because the gaussian filter
         # doesn't support vector images
-        single_channel_image = self.get_single_channel_image()
+        single_channel_image = self.get_single_channel_image(channel=channel)
+        # Mask the image to remove the background
+        binary_mask = self.get_binary_mask(channel=channel)
+        single_channel_image = sitk.Mask(single_channel_image, binary_mask)
 
         gaussian_filter = sitk.DiscreteGaussianImageFilter()
         # XXX: hard coded variance
@@ -65,30 +81,34 @@ class HistologyData:
 
         resampled_image = resampler.Execute(smoothed_image)
 
+        if save_path is not None:
+            sitk.WriteImage(resampled_image, save_path)
+
+        if return_img:
+            return resampled_image
+        else:
+            return None
+
         return resampled_image
 
 
-    def c3d_resample_to_mri_resolution(self, smoothing='0.15mm', spacing='0.3mm'):
+    def c3d_resample_to_mri_resolution(self, smoothing='0.15mm', spacing='0.3mm', save_path=None, return_img=True):
         single_channel_image = self.c3d_get_single_channel_image()
         c3d.push(single_channel_image)
         c3d.execute(f'-smooth-fast {smoothing} -resample-mm {spacing}')
 
-        return c3d.pop()
+        resampled_image = c3d.pop()
+
+        if save_path is not None:
+            sitk.WriteImage(resampled_image, save_path)
+
+        if return_img:
+            return resampled_image
+        else:
+            return None
 
 
-    def _remove_mask_border(self, mask, border=25):
-        # A lot of slides have shadow/dark artefacts on the border that affect
-        # the mask thresholding. We remove the border of the mask to avoid this.
-        mask_arr = sitk.GetArrayFromImage(mask)[0, :, :]
-        mask_arr[:border, :] = 0
-        mask_arr[-border:, :] = 0
-        mask_arr[:, :border] = 0
-        mask_arr[:, -border:] = 0
-
-        return sitk.GetImageFromArray(mask_arr)
-
-
-    def get_binary_mask(self, channel=1):
+    def get_binary_mask(self, channel=1, save_path=None, return_img=True):
         # get the single channel image
         single_channel = self.get_single_channel_image(channel=channel)
 
@@ -104,52 +124,54 @@ class HistologyData:
         radius = [2, 2, 2]
         closed_mask = sitk.BinaryMorphologicalClosing(binary_mask, radius, structuring_element)
 
-        closed_mask = self._remove_mask_border(closed_mask)
+        if save_path is not None:
+            sitk.WriteImage(closed_mask, save_path)
 
-        return closed_mask
+        if return_img:
+            return closed_mask
+        else:
+            return None
 
 
-    def get_lowres_mask(self, binary_mask, resampled_histo):
+    def c3d_get_lowres_mask(self, binary_mask, resampled_histo, save_path=None, return_img=True):
         output_size = resampled_histo.GetSize()
 
-        # Do this theatre to get a 3D mask
-        # because c3d doesn't support 2D masks
-        # and simpleitk squeezes the singleton dimension
-        # OR to avoid all this,accept the mask path and have c3d read it
-        binary_mask_np = sitk.GetArrayFromImage(binary_mask)
-        binary_mask_3d = binary_mask_np[np.newaxis, :, :]
-        binary_mask = sitk.GetImageFromArray(binary_mask_3d, isVector=False)
+        # binary_mask_np = sitk.GetArrayFromImage(binary_mask)
+        # binary_mask = sitk.GetImageFromArray(binary_mask_np, isVector=False)
 
         c3d.push(binary_mask)
         c3d.execute(f'-resample {output_size[0]}x{output_size[1]}x{output_size[2]}')
 
-        return c3d.pop()
+        lowres_mask = c3d.pop()
+
+        if save_path is not None:
+            sitk.WriteImage(lowres_mask, save_path)
+
+        if return_img:
+            return lowres_mask
+        else:
+            return None
 
 
-    def get_chunk_mask(self, binary_mask_path, chunk_mask_path, n_parts=10):
-        # BUG: There are no registered IO factories
-        # RuntimeError: /Users/runner/work/image-graph-cut/image-graph-cut/be/install/include/ITK-5.4/itkImageFileReader.hxx:135:
-        #  Could not create IO object for reading file /Users/cathalye/Projects/proj_histo_mri_greedy_registration/scratch/binary.nii.gz
-        #  There are no registered IO factories.
-        #  Please visit https://www.itk.org/Wiki/ITK/FAQ#NoFactoryException to diagnose the problem.
+    def preprocess_histology(self, channel=1, base_dir=None):
+        if base_dir is None:
+            raise ValueError("Base directory is required to save images")
 
-        # XXX: hard coded parameters
-        # image_graph_cut(
-        #     fn_input=binary_mask_path,
-        #     fn_output=chunk_mask_path,
-        #     n_parts=n_parts,
-        #     tolerance=1.2,
-        #     n_metis_iter=100,
-        #     max_comp=4,
-        #     min_comp_frac=0.1
-        # )
+        # Step 1 - Extract single channel histology
+        historef_single_channel_path = os.path.join(base_dir, "historef_single_channel.nii.gz")
+        histo_single_channel = self.get_single_channel_image(channel=channel, save_path=historef_single_channel_path)
+        # histo_single_channel = self.c3d_get_single_channel_image(channel=1, save_path=historef_single_channel_path)
 
-        subprocess.run([
-            "image_graph_cut",
-            "-u", "1.2",
-            "-n", "100",
-            "-c", "4", "0.1",
-            binary_mask_path,
-            chunk_mask_path,
-            str(n_parts),
-        ], stdout=subprocess.DEVNULL)
+        # Step 2 - Resample histology to MRI resolution
+        historef_resampled_path = os.path.join(base_dir, "historef_resampled.nii.gz")
+        histo_resampled = self.resample_to_mri_resolution(channel=channel, save_path=historef_resampled_path)
+
+        # Step 3 - Get binary mask
+        historef_binary_mask_path = os.path.join(base_dir, "historef_binary_mask.nii.gz")
+        histo_binary = self.get_binary_mask(channel=channel, save_path=historef_binary_mask_path)
+
+        # Step 4 - Get lowres mask
+        historef_lowres_mask_path = os.path.join(base_dir, "historef_lowres_mask.nii.gz")
+        histo_lowres = self.c3d_get_lowres_mask(histo_binary, histo_resampled, save_path=historef_lowres_mask_path)
+
+        print(f"Reference histology slide preprocessed and saved to {base_dir}")

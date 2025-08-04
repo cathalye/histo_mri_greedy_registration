@@ -25,15 +25,15 @@ class MRIData:
         self.ap_direction = 1 if orientation[self.ap_axis] == 'A' else -1
 
 
-    def get_start_end_mm(self, slab_num):
+    def _get_start_end_mm(self, slab_num):
         # Assume each slab is 10 mm thick and each slit in the mold is 2 mm
         start_mm = slab_num * 12 - 4
         end_mm = start_mm + 10
         return start_mm, end_mm
 
 
-    def get_slab_start_end_voxels(self, slab_num):
-        start_mm, end_mm = self.get_start_end_mm(slab_num)
+    def _get_slab_start_end_voxels(self, slab_num):
+        start_mm, end_mm = self._get_start_end_mm(slab_num)
 
         if self.ap_direction == 1:
             # i.e. the AP axis goes from posterior to anterior
@@ -52,8 +52,8 @@ class MRIData:
         return start_voxel, end_voxel
 
 
-    def get_mri_slab(self, slab_num):
-        start_voxel, end_voxel = self.get_slab_start_end_voxels(slab_num)
+    def get_mri_slab(self, slab_num, save_path=None, return_img=True):
+        start_voxel, end_voxel = self._get_slab_start_end_voxels(slab_num)
 
         # set the index of slice to be extracted in AP axis to the start voxel
         index = [0, 0, 0]
@@ -65,4 +65,10 @@ class MRIData:
         # use the functional interface to extract the slice
         sliced_mri = sitk.RegionOfInterest(self.sitk_image, size=slice_size, index=index)
 
-        return sliced_mri
+        if save_path:
+            sitk.WriteImage(sliced_mri, save_path)
+
+        if return_img:
+            return sliced_mri
+        else:
+            return None

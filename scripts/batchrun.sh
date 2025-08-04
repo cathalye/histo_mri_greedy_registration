@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DATA_DIR="/Users/cathalye/Projects/data_histo_mri/test_subject"
+DATA_DIR="/Users/cathalye/Projects/data_histo_mri/Victoria_reg"
 WORK_DIR="/Users/cathalye/Projects/proj_histo_mri_greedy_registration/work"
 
 # Loop through all specimen directories
@@ -50,6 +50,6 @@ for specimen_dir in "$DATA_DIR"/INDD*/; do
         output_path="$WORK_DIR/$specimen/$slab_name"
 
         python initial_alignment.py --fixed "$histo_path" --moving "$mri_path" --output_path "$output_path" --slab_num "$slab_number"
-        
+
     done
 done
