@@ -9,8 +9,39 @@ greedy = Greedy3D()
 
 
 class HistoMRIRegistration:
+    """
+    A class for performing multi-stage registration between postmortem MRI and histology data.
+
+    This class implements a complete registration pipeline that includes:
+    1. Initial center-based alignment
+    2. Manual refinement using ITK-SNAP
+    3. Rigid registration (6-DOF)
+    4. Affine registration (12-DOF)
+    5. Deformable registration (non-linear)
+    6. Transform application and result generation
+
+    The registration uses the Greedy algorithm with Weighted Normalized Cross-Correlation (WNCC)
+    as the similarity metric.
+    """
 
     def __init__(self, base_dir):
+        """
+        Initialize the registration processor with file paths.
+
+        Parameters
+        ----------
+        base_dir : str
+            Base directory containing all input and output files for the registration.
+            This directory should contain the MRI slab and histology data.
+
+        Notes
+        -----
+        Sets up all file paths for:
+        - Input images (MRI slab, resampled histology, histology mask)
+        - Transform files (initial, manual, rigid, affine, deformable)
+        - Result images (registered MRI at each stage)
+        - ITK-SNAP workspaces (manual alignment, final results)
+        """
         # Paths to all files for registration
         self.base_dir = base_dir
         self.mri_slab_path = os.path.join(base_dir, f"mri_slab.nii.gz")
@@ -37,6 +68,29 @@ class HistoMRIRegistration:
 
 
     def _get_physical_center_of_image(self, image, c3d=True):
+        """
+        Calculate the physical center coordinates of an image.
+
+        Parameters
+        ----------
+        image : SimpleITK.Image
+            The input image for which to calculate the center.
+        c3d : bool, optional
+            If True, converts coordinates from SimpleITK (LPS) to c3d (RAS) convention.
+            Default is True.
+
+        Returns
+        -------
+        tuple
+            Physical center coordinates (x, y, z) in millimeters.
+            If c3d=True, coordinates are in RAS convention; otherwise in LPS.
+
+        Notes
+        -----
+        SimpleITK uses LPS (Left-Posterior-Superior) coordinate system, while c3d uses
+        RAS (Right-Anterior-Superior). When c3d=True, the x and y coordinates are flipped
+        to convert between these conventions.
+        """
         size = image.GetSize()
 
         center = np.zeros(len(size))
@@ -53,6 +107,26 @@ class HistoMRIRegistration:
 
 
     def create_initial_alignment(self):
+        """
+        Create initial center-based alignment between MRI and histology images.
+
+        This function performs a rough alignment by:
+        1. Calculating the physical centers of both MRI and histology images
+        2. Creating a transformation that aligns these centers
+        3. Applying a 90-degree rotation around the x-axis
+        4. Saving the initial transformation matrix
+
+        The alignment uses c3d_affine_tool to create a transformation that:
+        - Translates the MRI center to origin
+        - Applies a 90-degree rotation around x-axis
+        - Translates to the histology center
+        - Inverts and multiplies transformations to get the final alignment
+
+        Notes
+        -----
+        This is a coarse alignment that should be refined manually in ITK-SNAP.
+        The transformation is saved as 'centers_init.mat' in the transforms directory.
+        """
         # Extract MRI slab
         mri_slab = sitk.ReadImage(self.mri_slab_path)
         histo_resampled = sitk.ReadImage(self.histo_resampled_path)
@@ -87,6 +161,23 @@ class HistoMRIRegistration:
         )
 
     def save_manual_itksnap_workspace(self):
+        """
+        Create an ITK-SNAP workspace for manual alignment refinement.
+
+        This function generates an ITK-SNAP workspace file that contains:
+        - Fixed image: Resampled histology (reference)
+        - Moving image: MRI slab with initial center alignment applied
+        - Segmentation: Histology mask for guidance
+
+        The workspace is saved as 'manual_init.itksnap' and can be opened in ITK-SNAP
+        for manual refinement of the initial alignment.
+
+        Notes
+        -----
+        The workspace uses the initial center-based transformation as a starting point.
+        Users should manually align the images in ITK-SNAP and save the result as
+        'manual_init_result.itksnap'.
+        """
         subprocess.run([
             "itksnap-wt",
                 "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
@@ -96,8 +187,21 @@ class HistoMRIRegistration:
                 ], stdout=subprocess.DEVNULL
            )
 
-    # Extract the manual alignment matrix from initial alignment workspace
     def extract_manual_alignment_matrix(self):
+        """
+        Extract the manual alignment transformation matrix from ITK-SNAP workspace.
+
+        This function reads the manually refined transformation from the ITK-SNAP
+        workspace file and extracts it as a transformation matrix. The extraction
+        uses itksnap-wt command-line tool to get the transform from layer 1
+        (the moving image layer) and saves it as a matrix file.
+
+        Notes
+        -----
+        This function assumes that manual alignment has been completed and saved
+        as 'manual_init_result.itksnap'. The extracted transformation will be used
+        as the initial transform for the automated registration steps.
+        """
         subprocess.run(
             f"itksnap-wt -i {self.manual_result_workspace_path} -lp 1 -props-get-transform | grep '3>' | sed -e 's/3> //g' > {self.manual_init_transform_path}",
             shell=True, stdout=subprocess.DEVNULL
@@ -105,6 +209,24 @@ class HistoMRIRegistration:
 
 
     def rigid_registration(self):
+        """
+        Perform rigid body registration (6 degrees of freedom).
+
+        This function performs rigid registration using the Greedy algorithm with:
+        - 6 degrees of freedom (3 translations + 3 rotations)
+        - Weighted Normalized Cross-Correlation (WNCC) similarity metric
+        - Histology mask for weighted registration
+        - Manual alignment as initial transform
+        - Multi-resolution optimization (100x100x80 iterations)
+
+        The registration aligns the MRI slab to the histology image while preserving
+        the overall shape and size of the MRI data.
+
+        Notes
+        -----
+        The rigid transformation is saved as 'rigid.mat' and will be used as the
+        initial transform for the subsequent affine registration.
+        """
         greedy.execute('-d 3 '
                        '-z '
                        '-a -dof 7 '
@@ -121,6 +243,24 @@ class HistoMRIRegistration:
                        )
 
     def affine_registration(self):
+        """
+        Perform affine registration (12 degrees of freedom).
+
+        This function performs affine registration using the Greedy algorithm with:
+        - 12 degrees of freedom (3 translations + 3 rotations + 3 scaling + 3 shearing)
+        - Weighted Normalized Cross-Correlation (WNCC) similarity metric
+        - Histology mask for weighted registration
+        - Rigid registration result as initial transform
+        - Multi-resolution optimization (100x100x40 iterations)
+
+        The affine registration allows for scaling and shearing transformations
+        to better align the MRI and histology images.
+
+        Notes
+        -----
+        The affine transformation is saved as 'affine.mat' and will be used as the
+        initial transform for the subsequent deformable registration.
+        """
         greedy.execute('-d 3 '
                        '-z '
                        '-a -dof 12 '
@@ -137,6 +277,27 @@ class HistoMRIRegistration:
                        )
 
     def deformable_registration(self):
+        """
+        Perform deformable (non-linear) registration.
+
+        This function performs deformable registration using the Greedy algorithm with:
+        - Non-linear deformation field
+        - Weighted Normalized Cross-Correlation (WNCC) similarity metric
+        - Histology mask for weighted registration
+        - Affine registration result as initial transform
+        - Multi-resolution optimization (200x200x100 iterations)
+        - Multi-scale smoothing (1.5mm to 0.5mm)
+        - Convergence threshold of 0.5
+
+        The deformable registration allows for local non-linear deformations to
+        achieve the highest accuracy alignment between MRI and histology.
+
+        Notes
+        -----
+        The deformable transformation is saved as 'deformable.mhd' and represents
+        the final registration result. This step requires the most computational
+        time but provides the highest accuracy.
+        """
         greedy.execute('-d 3 '
                        '-z '
                        '-ref-pad 0x0x2 '
@@ -156,6 +317,25 @@ class HistoMRIRegistration:
                        )
 
     def apply_transforms(self):
+        """
+        Apply all registration transforms and generate result images.
+
+        This function applies the registration transforms in sequence and generates
+        registered MRI images at each stage of the pipeline:
+        1. Manual alignment result
+        2. Rigid registration result
+        3. Affine registration result
+        4. Deformable registration result (final)
+
+        Additionally, it creates a comprehensive ITK-SNAP workspace containing all
+        results for visualization and comparison.
+
+        Notes
+        -----
+        Each result image shows the MRI data transformed to align with the histology
+        reference. The final workspace includes all stages for easy comparison of
+        registration quality at each step.
+        """
         # Result after applying all the transforms to the MRI slab
         greedy.execute('-d 3 '
                        '-rf {} '
