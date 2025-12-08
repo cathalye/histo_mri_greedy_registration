@@ -25,18 +25,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.histology_data import HistologyData
 from src.mri_data import MRIData
-from src.registration import HistoMRIRegistration
+from src.histo_mri_registration import HistoMRIRegistration
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixed", type=str, required=True, help="Path to fixed image (histology)")
     parser.add_argument("--moving", type=str, required=True, help="Path to moving image (MRI)")
+    parser.add_argument("--brainmold_path", type=str, required=True, help="Path to brainmold slabs")
     parser.add_argument("--slab_num", type=int, required=True, help="Slab number")
     parser.add_argument("--working_dir", type=str, required=True, help="Working directory")
     args = parser.parse_args()
 
     slab_num = args.slab_num
     working_dir = args.working_dir
+    brainmold_path = args.brainmold_path
 
     # Create output directory if it doesn't exist
     os.makedirs(working_dir, exist_ok=True)
@@ -56,7 +58,8 @@ if __name__ == "__main__":
 
     # Extract the slab from whole hemisphere MRI
     mri_slab_path = os.path.join(working_dir, f"mri_slab.nii.gz")
-    mri_data.get_mri_slab(slab_num, save_path=mri_slab_path, return_img=False)
+    # mri_data.get_mri_slab(slab_num, save_path=mri_slab_path, return_img=False)
+    mri_data.get_mri_slab_from_brainmold(slab_num, brainmold_path=brainmold_path, save_path=mri_slab_path)
 
     # Preprocess histology
     histology_data.preprocess_histology(channel=0, base_dir=histology_path)

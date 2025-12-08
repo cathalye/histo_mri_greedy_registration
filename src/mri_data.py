@@ -1,6 +1,10 @@
+import glob
+import os
 import nibabel as nib
 import SimpleITK as sitk
+from picsl_c3d import Convert3D
 
+c3d = Convert3D()
 
 class MRIData:
     """
@@ -201,3 +205,42 @@ class MRIData:
             return sliced_mri
         else:
             return None
+
+
+    def get_mri_slab_from_brainmold(self, slab_num, brainmold_path, save_path):
+        """
+        Extract MRI slab corresponding to the brainmold slab.
+
+        The above functions are "logically correct". However, there is no guarantee that the
+        MRI mask is cropped tightly that 0 corresponds to the first voxel of the MRI slab.
+
+        Therefore, using the brainmold slab is a more robust way to extract the MRI slab.
+
+        Further, we pad the brainmold slab by 10 voxels in both anterior and posterior directions to
+        account for any out of plane deformations while sectioning the histology tissue.
+
+        Parameters
+        ----------
+        slab_num : int
+            Slab number corresponding to the histology slide.
+        brainmold_path : str
+            Path to the brainmold slabs.
+        save_path : str
+            Path to save the extracted MRI slab.
+
+        """
+        slab_path = os.path.join(brainmold_path, f"*_slab{slab_num:02d}_mask_with_dots.nii.gz")
+        slab_file = glob.glob(slab_path)[0]
+
+        c3d.execute(f'{slab_file} -pad 0x10x0 0x10x0 0')
+
+        padded_slab = c3d.pop()
+        sitk.WriteImage(padded_slab, "tmp_padded_slab.nii.gz")
+        c3d.execute(f'tmp_padded_slab.nii.gz {self.mri_path} -reslice-identity')
+
+        extracted_slab = c3d.pop()
+
+        if save_path:
+            sitk.WriteImage(extracted_slab, save_path)
+
+        os.remove("tmp_padded_slab.nii.gz")
