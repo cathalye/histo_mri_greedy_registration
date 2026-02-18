@@ -50,6 +50,28 @@ class MRIData:
         # Calculate AP axis information
         self._calculate_ap_axis()
 
+    def _load_existing_if_needed(self, save_path, overwrite, return_img):
+        """
+        Helper method to check if existing file should be loaded instead of recomputing.
+
+        Parameters
+        ----------
+        save_path : str or None
+            Path to the file to check.
+        overwrite : bool
+            Whether to overwrite existing files.
+        return_img : bool
+            Whether to return the image object.
+
+        Returns
+        -------
+        SimpleITK.Image or None or False
+            Returns the loaded image if file exists and should be loaded,
+            False if computation should proceed, None if file exists but return_img=False.
+        """
+        if save_path is not None and not overwrite and os.path.exists(save_path):
+            return sitk.ReadImage(save_path) if return_img else None
+        return False
 
     def _calculate_ap_axis(self):
         """
@@ -155,7 +177,7 @@ class MRIData:
         return start_voxel, end_voxel
 
 
-    def get_mri_slab(self, slab_num, save_path=None, return_img=True):
+    def get_mri_slab(self, slab_num, save_path=None, return_img=True, overwrite=False):
         """
         Extract an MRI slab corresponding to a specific histology slide.
 
@@ -167,6 +189,9 @@ class MRIData:
             Path to save the extracted slab. If None, slab is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -186,6 +211,10 @@ class MRIData:
         The extracted slab maintains the original image metadata (spacing, origin,
         direction) and can be used directly in the registration pipeline.
         """
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
         start_voxel, end_voxel = self._get_slab_start_end_voxels(slab_num)
 
         # set the index of slice to be extracted in AP axis to the start voxel
@@ -203,11 +232,10 @@ class MRIData:
 
         if return_img:
             return sliced_mri
-        else:
-            return None
+        return None
 
 
-    def get_mri_slab_from_brainmold(self, slab_num, brainmold_path, save_path):
+    def get_mri_slab_from_brainmold(self, slab_num, brainmold_path, save_path, overwrite=False):
         """
         Extract MRI slab corresponding to the brainmold slab.
 
@@ -227,8 +255,15 @@ class MRIData:
             Path to the brainmold slabs.
         save_path : str
             Path to save the extracted MRI slab.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(save_path):
+            return
+
         slab_path = os.path.join(brainmold_path, f"*_slab{slab_num:02d}_mask_with_dots.nii.gz")
         slab_file = glob.glob(slab_path)[0]
 

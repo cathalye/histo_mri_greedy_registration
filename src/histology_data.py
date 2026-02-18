@@ -2,6 +2,8 @@ import os
 
 import numpy as np
 import SimpleITK as sitk
+from skimage import color, filters, morphology
+
 from picsl_c3d import Convert3D
 
 c3d = Convert3D()
@@ -46,8 +48,30 @@ class HistologyData:
         self.origin = self.sitk_image.GetOrigin()
         self.direction = self.sitk_image.GetDirection()
 
+    def _load_existing_if_needed(self, save_path, overwrite, return_img):
+        """
+        Helper method to check if existing file should be loaded instead of recomputing.
 
-    def get_single_channel_image(self, channel=1, save_path=None, return_img=True):
+        Parameters
+        ----------
+        save_path : str or None
+            Path to the file to check.
+        overwrite : bool
+            Whether to overwrite existing files.
+        return_img : bool
+            Whether to return the image object.
+
+        Returns
+        -------
+        SimpleITK.Image or None or False
+            Returns the loaded image if file exists and should be loaded,
+            False if computation should proceed, None if file exists but return_img=False.
+        """
+        if save_path is not None and not overwrite and os.path.exists(save_path):
+            return sitk.ReadImage(save_path) if return_img else None
+        return False
+
+    def get_single_channel_image(self, channel=1, save_path=None, return_img=True, overwrite=False):
         """
         Extract a single channel from a multi-channel histology image.
 
@@ -59,6 +83,9 @@ class HistologyData:
             Path to save the extracted channel image. If None, image is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -71,6 +98,10 @@ class HistologyData:
         from the multi-channel input image. This is useful for histology images
         that contain multiple staining channels (e.g., LFB-CV staining).
         """
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
         single_channel_image = sitk.VectorIndexSelectionCast(self.sitk_image, channel)
 
         if save_path is not None:
@@ -78,11 +109,10 @@ class HistologyData:
 
         if return_img:
             return single_channel_image
-        else:
-            return None
+        return None
 
 
-    def c3d_get_single_channel_image(self, channel=1, save_path=None, return_img=True):
+    def c3d_get_single_channel_image(self, channel=1, save_path=None, return_img=True, overwrite=False):
         """
         Extract a single channel using Convert3D (c3d) tools.
 
@@ -94,6 +124,9 @@ class HistologyData:
             Path to save the extracted channel image. If None, image is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -104,6 +137,10 @@ class HistologyData:
         -----
         This is an alternative to get_single_channel_image() using c3d tools.
         """
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
         # TODO: ask Paul why -mcs throws an error
         # Also had the same issue with data_histo_mri_paired_png
         # used subprocess to get around it there
@@ -117,11 +154,10 @@ class HistologyData:
 
         if return_img:
             return single_channel_image
-        else:
-            return None
+        return None
 
 
-    def resample_to_mri_resolution(self, channel=1, spacing=[0.3, 0.3, 1.0], save_path=None, return_img=True):
+    def resample_to_mri_resolution(self, channel=1, spacing=[0.3, 0.3, 1.0], save_path=None, return_img=True, overwrite=False):
         """
         Resample histology image to MRI resolution with preprocessing.
 
@@ -135,6 +171,9 @@ class HistologyData:
             Path to save the resampled image. If None, image is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -152,11 +191,15 @@ class HistologyData:
 
         The output size is calculated based on the ratio of input to output spacing.
         """
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
         # Need single channel image first because the gaussian filter
         # doesn't support vector images
-        single_channel_image = self.get_single_channel_image(channel=channel)
+        single_channel_image = self.get_single_channel_image(channel=channel, overwrite=overwrite)
         # Mask the image to remove the background
-        binary_mask = self.get_binary_mask(channel=channel)
+        binary_mask = self.get_binary_mask(overwrite=overwrite)
         single_channel_image = sitk.Mask(single_channel_image, binary_mask)
 
         gaussian_filter = sitk.DiscreteGaussianImageFilter()
@@ -188,13 +231,10 @@ class HistologyData:
 
         if return_img:
             return resampled_image
-        else:
-            return None
-
-        return resampled_image
+        return None
 
 
-    def c3d_resample_to_mri_resolution(self, smoothing='0.15mm', spacing='0.3mm', save_path=None, return_img=True):
+    def c3d_resample_to_mri_resolution(self, smoothing='0.15mm', spacing='0.3mm', save_path=None, return_img=True, overwrite=False):
         """
         Resample histology image to MRI resolution using Convert3D (c3d) tools.
 
@@ -208,6 +248,9 @@ class HistologyData:
             Path to save the resampled image. If None, image is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -220,7 +263,11 @@ class HistologyData:
         The c3d approach uses fast smoothing and resampling which may be more
         efficient for large images.
         """
-        single_channel_image = self.c3d_get_single_channel_image()
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
+        single_channel_image = self.c3d_get_single_channel_image(overwrite=overwrite)
         c3d.push(single_channel_image)
         c3d.execute(f'-smooth-fast {smoothing} -resample-mm {spacing}')
 
@@ -231,64 +278,78 @@ class HistologyData:
 
         if return_img:
             return resampled_image
-        else:
-            return None
+        return None
 
 
-    def get_binary_mask(self, channel=1, save_path=None, return_img=True):
+    def get_binary_mask(self, save_path=None, return_img=True, overwrite=False):
         """
-        Create a binary mask from histology image using Otsu thresholding.
+        Create a binary mask from histology image using saturation thresholding.
 
         Parameters
         ----------
-        channel : int, optional
-            Channel index to use for mask creation. Default is 1.
         save_path : str, optional
             Path to save the binary mask. If None, mask is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
         SimpleITK.Image or None
             The binary mask if return_img=True, otherwise None.
-
-        Notes
-        -----
-        This function creates a binary mask by:
-        1. Extracting the specified channel from multi-channel input
-        2. Applying Otsu thresholding to separate tissue from background
-        3. Performing morphological closing to fill holes in the mask
-        4. Using a ball-shaped structuring element with radius [2, 2, 2]
-
-        The resulting mask can be used for weighted registration to focus
-        on tissue regions and ignore background areas.
         """
-        # get the single channel image
-        single_channel = self.get_single_channel_image(channel=channel)
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
 
-        otsu_filter = sitk.OtsuThresholdImageFilter()
-        otsu_filter.SetInsideValue(1)
-        otsu_filter.SetOutsideValue(0)
-        binary_mask = otsu_filter.Execute(single_channel)
+        rgb_array = sitk.GetArrayFromImage(self.sitk_image)
 
-        # Otsu thresholding has holes in the mask due to the irregular staining
-        # Dilation to fill the holes
-        structuring_element = sitk.sitkBall
-        # XXX: hard coded radius
-        radius = [2, 2, 2]
-        closed_mask = sitk.BinaryMorphologicalClosing(binary_mask, radius, structuring_element)
+        # Handle 4D arrays from NIfTI (shape: 1, H, W, 3) -> squeeze to (H, W, 3)
+        original_shape = rgb_array.shape
+        if rgb_array.ndim == 4 and rgb_array.shape[0] == 1:
+            rgb_array = rgb_array.squeeze(axis=0)
+
+        if rgb_array.max() > 1:
+            rgb_normalized = rgb_array.astype(np.float32) / 255.0
+        else:
+            rgb_normalized = rgb_array.astype(np.float32)
+
+        # Convert RGB to HSV and extract saturation channel
+        hsv = color.rgb2hsv(rgb_normalized)
+        saturation = hsv[:, :, 1]
+
+        # Triangle threshold: optimal for unimodal + tail distributions
+        # (large background peak at low saturation, tissue spread higher)
+        thresh = filters.threshold_triangle(saturation)
+        thresh = max(thresh, 0.015)  # Floor to avoid noise sensitivity
+
+        # Binary mask: tissue has color, background doesn't
+        tissue_mask = saturation > thresh
+
+        # Morphological cleanup
+        mask = morphology.remove_small_objects(tissue_mask, min_size=100)
+        mask = morphology.remove_small_holes(mask, area_threshold=500)
+        mask = morphology.binary_closing(mask, morphology.disk(2)).astype(np.uint8)
+
+        if len(original_shape) == 4 and original_shape[0] == 1:
+            mask_out = mask[np.newaxis, ...]
+        else:
+            mask_out = mask
+
+        mask_image = sitk.GetImageFromArray(mask_out)
+        mask_image.CopyInformation(self.sitk_image)
 
         if save_path is not None:
-            sitk.WriteImage(closed_mask, save_path)
+            sitk.WriteImage(mask_image, save_path)
 
         if return_img:
-            return closed_mask
-        else:
-            return None
+            return mask_image
+        return None
 
 
-    def c3d_get_lowres_mask(self, binary_mask, resampled_histo, save_path=None, return_img=True):
+    def c3d_get_lowres_mask(self, binary_mask, resampled_histo, save_path=None, return_img=True, overwrite=False):
         """
         Create a low-resolution mask by resampling a binary mask.
 
@@ -302,6 +363,9 @@ class HistologyData:
             Path to save the low-resolution mask. If None, mask is not saved.
         return_img : bool, optional
             Whether to return the SimpleITK image object. Default is True.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Returns
         -------
@@ -317,6 +381,10 @@ class HistologyData:
         The low-resolution mask is used during registration to provide spatial
         weighting and focus the alignment on tissue regions.
         """
+        existing = self._load_existing_if_needed(save_path, overwrite, return_img)
+        if existing is not False:
+            return existing
+
         output_size = resampled_histo.GetSize()
 
         # binary_mask_np = sitk.GetArrayFromImage(binary_mask)
@@ -332,11 +400,10 @@ class HistologyData:
 
         if return_img:
             return lowres_mask
-        else:
-            return None
+        return None
 
 
-    def preprocess_histology(self, channel=1, base_dir=None):
+    def preprocess_histology(self, channel=1, base_dir=None, overwrite=False):
         """
         Complete preprocessing pipeline for histology data.
 
@@ -347,6 +414,9 @@ class HistologyData:
         base_dir : str
             Base directory where all processed files will be saved.
             Must be provided.
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
 
         Raises
         ------
@@ -377,18 +447,18 @@ class HistologyData:
 
         # Step 1 - Extract single channel histology
         historef_single_channel_path = os.path.join(base_dir, "historef_single_channel.nii.gz")
-        histo_single_channel = self.get_single_channel_image(channel=channel, save_path=historef_single_channel_path)
+        histo_single_channel = self.get_single_channel_image(channel=channel, save_path=historef_single_channel_path, overwrite=overwrite)
 
         # Step 2 - Resample histology to MRI resolution
         historef_resampled_path = os.path.join(base_dir, "historef_resampled.nii.gz")
-        histo_resampled = self.resample_to_mri_resolution(channel=channel, save_path=historef_resampled_path)
+        histo_resampled = self.resample_to_mri_resolution(channel=channel, save_path=historef_resampled_path, overwrite=overwrite)
 
         # Step 3 - Get binary mask
         historef_binary_mask_path = os.path.join(base_dir, "historef_binary_mask.nii.gz")
-        histo_binary = self.get_binary_mask(channel=channel, save_path=historef_binary_mask_path)
+        histo_binary = self.get_binary_mask(save_path=historef_binary_mask_path, overwrite=overwrite)
 
         # Step 4 - Get lowres mask
         historef_lowres_mask_path = os.path.join(base_dir, "historef_lowres_mask.nii.gz")
-        histo_lowres = self.c3d_get_lowres_mask(histo_binary, histo_resampled, save_path=historef_lowres_mask_path)
+        histo_lowres = self.c3d_get_lowres_mask(histo_binary, histo_resampled, save_path=historef_lowres_mask_path, overwrite=overwrite)
 
         print(f"Reference histology slide preprocessed and saved to {base_dir}")

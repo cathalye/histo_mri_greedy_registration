@@ -29,9 +29,11 @@ from src.histo_mri_registration import HistoMRIRegistration
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--working_dir", type=str, required=True, help="Working directory")
+    parser.add_argument("--overwrite", action="store_true", help="Recompute and overwrite existing files")
     args = parser.parse_args()
 
     working_dir = args.working_dir
+    overwrite = args.overwrite
 
     # Check for manual initialization
     manual_init_path = os.path.join(working_dir, "manual/manual_init_result.itksnap")
@@ -40,8 +42,8 @@ if __name__ == "__main__":
 
     # Run registration
     processor = HistoMRIRegistration(working_dir)
-    processor.extract_manual_alignment_matrix()
-    processor.rigid_registration()
-    processor.affine_registration()
-    processor.deformable_registration()
-    processor.apply_transforms()
+    processor.extract_manual_alignment_matrix(overwrite=overwrite)
+    processor.rigid_registration(overwrite=overwrite)
+    processor.affine_registration(overwrite=overwrite)
+    processor.deformable_registration(overwrite=overwrite)
+    processor.apply_transforms(overwrite=overwrite)

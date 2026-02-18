@@ -1,12 +1,13 @@
 #!/bin/bash
 
-DATA_DIR="/Users/cathalye/Projects/data_histo_mri/Victoria_reg"
-WORK_DIR="/Users/cathalye/Projects/proj_histo_mri_greedy_registration/work"
+DATA_DIR="/Users/cathalye/Projects/histo_mri_INR/data_validation"
 
 # Loop through all specimen directories
 for specimen_dir in "$DATA_DIR"/INDD*/; do
     # Extract specimen name from directory path
     specimen=$(basename "$specimen_dir")
+
+    brainmold_path="$DATA_DIR/$specimen/brainmold*"
 
     # Skip if not a directory or if it's a hidden directory
     if [[ ! -d "$specimen_dir" ]] || [[ "$specimen" == .* ]]; then
@@ -47,9 +48,13 @@ for specimen_dir in "$DATA_DIR"/INDD*/; do
             continue
         fi
 
-        output_path="$WORK_DIR/$specimen/$slab_name"
+        work_dir="$DATA_DIR/$specimen/$slab_name"
 
-        python initial_alignment.py --fixed "$histo_path" --moving "$mri_path" --output_path "$output_path" --slab_num "$slab_number"
+        python initial_alignment.py --fixed "$histo_path" \
+         --moving "$mri_path" \
+         --brainmold_path "$brainmold_path" \
+         --working_dir "$work_dir" \
+         --slab_num "$slab_number"
 
     done
 done

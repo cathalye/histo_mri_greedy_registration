@@ -44,7 +44,7 @@ class HistoMRIRegistration:
         """
         # Paths to all files for registration
         self.base_dir = base_dir
-        self.mri_slab_path = os.path.join(base_dir, f"mri_slab.nii.gz")
+        self.mri_slab_path = os.path.join(base_dir, f"mri/mri_slab.nii.gz")
         self.histo_resampled_path = os.path.join(base_dir, "histology/historef_resampled.nii.gz")
         self.histo_lowres_mask_path = os.path.join(base_dir, "histology/historef_lowres_mask.nii.gz")
 
@@ -106,7 +106,7 @@ class HistoMRIRegistration:
             return image.TransformContinuousIndexToPhysicalPoint(center)
 
 
-    def create_initial_alignment(self):
+    def create_initial_alignment(self, overwrite=False):
         """
         Create initial center-based alignment between MRI and histology images.
 
@@ -122,11 +122,21 @@ class HistoMRIRegistration:
         - Translates to the histology center
         - Inverts and multiplies transformations to get the final alignment
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         This is a coarse alignment that should be refined manually in ITK-SNAP.
         The transformation is saved as 'centers_init.mat' in the transforms directory.
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(self.centers_init_transform_path):
+            return
+
         # Extract MRI slab
         mri_slab = sitk.ReadImage(self.mri_slab_path)
         histo_resampled = sitk.ReadImage(self.histo_resampled_path)
@@ -160,7 +170,7 @@ class HistoMRIRegistration:
             shell=True, stdout=subprocess.DEVNULL
         )
 
-    def save_manual_itksnap_workspace(self):
+    def save_manual_itksnap_workspace(self, overwrite=False):
         """
         Create an ITK-SNAP workspace for manual alignment refinement.
 
@@ -172,12 +182,22 @@ class HistoMRIRegistration:
         The workspace is saved as 'manual_init.itksnap' and can be opened in ITK-SNAP
         for manual refinement of the initial alignment.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         The workspace uses the initial center-based transformation as a starting point.
         Users should manually align the images in ITK-SNAP and save the result as
         'manual_init_result.itksnap'.
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(self.manual_init_workspace_path):
+            return
+
         subprocess.run([
             "itksnap-wt",
                 "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
@@ -187,7 +207,7 @@ class HistoMRIRegistration:
                 ], stdout=subprocess.DEVNULL
            )
 
-    def extract_manual_alignment_matrix(self):
+    def extract_manual_alignment_matrix(self, overwrite=False):
         """
         Extract the manual alignment transformation matrix from ITK-SNAP workspace.
 
@@ -196,19 +216,29 @@ class HistoMRIRegistration:
         uses itksnap-wt command-line tool to get the transform from layer 1
         (the moving image layer) and saves it as a matrix file.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         This function assumes that manual alignment has been completed and saved
         as 'manual_init_result.itksnap'. The extracted transformation will be used
         as the initial transform for the automated registration steps.
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(self.manual_init_transform_path):
+            return
+
         subprocess.run(
             f"itksnap-wt -i {self.manual_result_workspace_path} -lp 1 -props-get-transform | grep '3>' | sed -e 's/3> //g' > {self.manual_init_transform_path}",
             shell=True, stdout=subprocess.DEVNULL
             )
 
 
-    def rigid_registration(self):
+    def rigid_registration(self, overwrite=False):
         """
         Perform rigid body registration (6 degrees of freedom).
 
@@ -222,11 +252,21 @@ class HistoMRIRegistration:
         The registration aligns the MRI slab to the histology image while preserving
         the overall shape and size of the MRI data.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         The rigid transformation is saved as 'rigid.mat' and will be used as the
         initial transform for the subsequent affine registration.
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(self.rigid_transform_path):
+            return
+
         greedy.execute('-d 3 '
                        '-z '
                        '-a -dof 7 '
@@ -242,7 +282,7 @@ class HistoMRIRegistration:
                                        self.rigid_transform_path)
                        )
 
-    def affine_registration(self):
+    def affine_registration(self, overwrite=False):
         """
         Perform affine registration (12 degrees of freedom).
 
@@ -256,11 +296,21 @@ class HistoMRIRegistration:
         The affine registration allows for scaling and shearing transformations
         to better align the MRI and histology images.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         The affine transformation is saved as 'affine.mat' and will be used as the
         initial transform for the subsequent deformable registration.
         """
+        # Check if file exists and overwrite is False
+        if not overwrite and os.path.exists(self.affine_transform_path):
+            return
+
         greedy.execute('-d 3 '
                        '-z '
                        '-a -dof 12 '
@@ -276,7 +326,7 @@ class HistoMRIRegistration:
                                        self.affine_transform_path)
                        )
 
-    def deformable_registration(self):
+    def deformable_registration(self, overwrite=False):
         """
         Perform deformable (non-linear) registration.
 
@@ -292,12 +342,23 @@ class HistoMRIRegistration:
         The deformable registration allows for local non-linear deformations to
         achieve the highest accuracy alignment between MRI and histology.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         The deformable transformation is saved as 'deformable.mhd' and represents
         the final registration result. This step requires the most computational
         time but provides the highest accuracy.
         """
+        # Check if file exists and overwrite is False
+        # Note: deformable transform is a directory (.mhd + .raw), so check for .mhd file
+        if not overwrite and os.path.exists(self.deformable_transform_path):
+            return
+
         greedy.execute('-d 3 '
                        '-z '
                        '-ref-pad 0x0x2 '
@@ -316,7 +377,7 @@ class HistoMRIRegistration:
                                        self.deformable_transform_path)
                        )
 
-    def apply_transforms(self):
+    def apply_transforms(self, overwrite=False):
         """
         Apply all registration transforms and generate result images.
 
@@ -330,6 +391,12 @@ class HistoMRIRegistration:
         Additionally, it creates a comprehensive ITK-SNAP workspace containing all
         results for visualization and comparison.
 
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+
         Notes
         -----
         Each result image shows the MRI data transformed to align with the histology
@@ -337,49 +404,55 @@ class HistoMRIRegistration:
         registration quality at each step.
         """
         # Result after applying all the transforms to the MRI slab
-        greedy.execute('-d 3 '
-                       '-rf {} '
-                       '-rm {} {} '
-                       '-r {} {} '.format(self.histo_resampled_path,
-                                          self.mri_slab_path, self.deformable_result_path,
-                                          self.deformable_transform_path, self.affine_transform_path)
-                       )
+        if overwrite or not os.path.exists(self.deformable_result_path):
+            greedy.execute('-d 3 '
+                           '-rf {} '
+                           '-rm {} {} '
+                           '-r {} {} '.format(self.histo_resampled_path,
+                                              self.mri_slab_path, self.deformable_result_path,
+                                              self.deformable_transform_path, self.affine_transform_path)
+                           )
 
         # Result after applying the affine transform
-        greedy.execute('-d 3 '
-                       '-rf {} '
-                       '-rm {} {} '
-                       '-r {} '.format(self.histo_resampled_path,
-                                       self.mri_slab_path, self.affine_result_path,
-                                       self.affine_transform_path)
-                       )
+        if overwrite or not os.path.exists(self.affine_result_path):
+            greedy.execute('-d 3 '
+                           '-rf {} '
+                           '-rm {} {} '
+                           '-r {} '.format(self.histo_resampled_path,
+                                           self.mri_slab_path, self.affine_result_path,
+                                           self.affine_transform_path)
+                           )
 
         # Result after applying the rigid transform
-        greedy.execute('-d 3 '
-                       '-rf {} '
-                       '-rm {} {} '
-                       '-r {} '.format(self.histo_resampled_path,
-                                       self.mri_slab_path, self.rigid_result_path,
-                                       self.rigid_transform_path)
-                       )
+        if overwrite or not os.path.exists(self.rigid_result_path):
+            greedy.execute('-d 3 '
+                           '-rf {} '
+                           '-rm {} {} '
+                           '-r {} '.format(self.histo_resampled_path,
+                                           self.mri_slab_path, self.rigid_result_path,
+                                           self.rigid_transform_path)
+                           )
 
         # Result after applying the manual transform
-        greedy.execute('-d 3 '
-                       '-rf {} '
-                       '-rm {} {} '
-                       '-r {} '.format(self.histo_resampled_path,
-                                       self.mri_slab_path, self.manual_result_path,
-                                       self.manual_init_transform_path)
-                       )
+        if overwrite or not os.path.exists(self.manual_result_path):
+            greedy.execute('-d 3 '
+                           '-rf {} '
+                           '-rm {} {} '
+                           '-r {} '.format(self.histo_resampled_path,
+                                           self.mri_slab_path, self.manual_result_path,
+                                           self.manual_init_transform_path)
+                           )
 
-        subprocess.run([
-            "itksnap-wt",
-                "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
-                "-layers-add-anat", self.deformable_result_path, "-psn", "MRI (deformable)",
-                "-layers-add-anat", self.affine_result_path, "-psn", "MRI (affine)",
-                "-layers-add-anat", self.rigid_result_path, "-psn", "MRI (rigid)",
-                "-layers-add-anat", self.manual_result_path, "-psn", "MRI (manual)",
-                "-layers-add-seg", self.histo_lowres_mask_path, "-psn", "Mask",
-                "-o", self.results_workspace_path
-        ], stdout=subprocess.DEVNULL
-        )
+        # Create results workspace
+        if overwrite or not os.path.exists(self.results_workspace_path):
+            subprocess.run([
+                "itksnap-wt",
+                    "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
+                    "-layers-add-anat", self.deformable_result_path, "-psn", "MRI (deformable)",
+                    "-layers-add-anat", self.affine_result_path, "-psn", "MRI (affine)",
+                    "-layers-add-anat", self.rigid_result_path, "-psn", "MRI (rigid)",
+                    "-layers-add-anat", self.manual_result_path, "-psn", "MRI (manual)",
+                    "-layers-add-seg", self.histo_lowres_mask_path, "-psn", "Mask",
+                    "-o", self.results_workspace_path
+            ], stdout=subprocess.DEVNULL
+            )
