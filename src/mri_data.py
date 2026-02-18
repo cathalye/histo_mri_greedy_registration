@@ -1,10 +1,18 @@
 import glob
 import os
-import nibabel as nib
-import SimpleITK as sitk
-from picsl_c3d import Convert3D
+import subprocess
 
+import nibabel as nib
+import numpy as np
+import SimpleITK as sitk
+
+from picsl_c3d import Convert3D, Convert2D
 c3d = Convert3D()
+c2d = Convert2D()
+
+from picsl_greedy import Greedy3D, Greedy2D
+greedy3d = Greedy3D()
+greedy2d = Greedy2D()
 
 class MRIData:
     """
@@ -20,7 +28,7 @@ class MRIData:
     determines the correct AP axis direction for slab extraction.
     """
 
-    def __init__(self, mri_path):
+    def __init__(self, mri_path, purple_segmentation_path, reslice_transform_path, brainmold_path):
         """
         Initialize the MRI data processor.
 
@@ -28,6 +36,12 @@ class MRIData:
         ----------
         mri_path : str
             Path to the whole hemisphere postmortem MRI file (NIfTI format).
+        purple_segmentation_path : str
+            Path to the purple segmentation file (NIfTI format).
+        reslice_transform_path : str
+            Path to the reslice transform file (Transform file).
+        brainmold_path : str
+            Path to the brainmold slabs.
 
         Notes
         -----
@@ -42,6 +56,9 @@ class MRIData:
         self.mri_path = mri_path
         self.sitk_image = sitk.ReadImage(mri_path)
         self.nib_image = nib.load(mri_path)
+        self.purple_segmentation = purple_segmentation_path
+        self.reslice_transform = reslice_transform_path
+        self.brainmold_path = brainmold_path
 
         # Extract metadata
         self.spacing = self.sitk_image.GetSpacing()
@@ -235,7 +252,7 @@ class MRIData:
         return None
 
 
-    def get_mri_slab_from_brainmold(self, slab_num, brainmold_path, save_path, overwrite=False):
+    def get_mri_slab_from_brainmold(self, slab_num, save_path, overwrite=False):
         """
         Extract MRI slab corresponding to the brainmold slab.
 
@@ -251,8 +268,6 @@ class MRIData:
         ----------
         slab_num : int
             Slab number corresponding to the histology slide.
-        brainmold_path : str
-            Path to the brainmold slabs.
         save_path : str
             Path to save the extracted MRI slab.
         overwrite : bool, optional
@@ -264,7 +279,7 @@ class MRIData:
         if not overwrite and os.path.exists(save_path):
             return
 
-        slab_path = os.path.join(brainmold_path, f"*_slab{slab_num:02d}_mask_with_dots.nii.gz")
+        slab_path = os.path.join(self.brainmold_path, f"*_slab{slab_num:02d}_mask_with_dots.nii.gz")
         slab_file = glob.glob(slab_path)[0]
 
         c3d.execute(f'{slab_file} -pad 0x10x0 0x10x0 0')
@@ -279,3 +294,137 @@ class MRIData:
             sitk.WriteImage(extracted_slab, save_path)
 
         os.remove("tmp_padded_slab.nii.gz")
+
+
+    def _binarize_purple_slab(self, mask_path, binary_path):
+        """
+        Binarize the purple slab.
+        """
+        c3d.execute('{} '
+            '-binarize '
+                '-o {} '.format(mask_path,
+                                binary_path))
+
+
+    def _apply_graph_cut_to_purple_slab(self, binary_path, chunk_path, n_cuts=2):
+        """
+        Apply graph cut to the purple slab.
+
+        Parameters
+        ----------
+        binary_path : str
+            Path to the binary purple slab.
+        chunk_path : str
+            Path to save the chunk purple slab.
+        n_cuts : int, optional
+            Number of cuts to apply to the purple slab.
+        """
+        subprocess.run([
+            "image_graph_cut",
+            "-u", "1.2",
+            "-n", "100",
+            "-c", "4", "0.1",
+            binary_path,
+            chunk_path,
+            str(n_cuts),
+        ], stdout=subprocess.DEVNULL)
+
+
+    def _get_chunk_label(self, chunk_path, n_cuts=2, chosen_cut='S'):
+        chunk_mask = sitk.ReadImage(chunk_path)
+        data = sitk.GetArrayFromImage(chunk_mask)
+        z_size = data.shape[2]
+        x_size = data.shape[0]
+
+        if n_cuts == 1:
+            chunk_label = np.max(data)
+        elif n_cuts == 2:
+            superior_zone = data[2*x_size//3:, :, 2*z_size//3:]
+            superior_label = np.max(superior_zone)
+            inferior_zone = data[:x_size//3, :, :z_size//3]
+            inferior_label = np.max(inferior_zone)
+            if chosen_cut == 'S' or chosen_cut == 's':
+                chunk_label = superior_label
+            else:
+                chunk_label = inferior_label
+        elif n_cuts == 3:
+            raise ValueError("Need manual input for chunk label")
+
+        return chunk_label
+
+
+    def _get_purple_cut_slab(self, chunk_path, chunk_label, cut_path):
+        c3d.execute('{} -thresh {} {} 1 0 -o {} '.format(chunk_path,
+                                                         chunk_label, chunk_label,
+                                                         cut_path))
+
+
+    def process_purple_slab(self, slab_num, purple_slab_path, n_cuts=2, chosen_cut='S', overwrite=False):
+        """
+        Extract the purple segmentation slab corresponding to the brainmold slab.
+
+        Parameters
+        ----------
+        slab_num : int
+            Slab number corresponding to the histology slide.
+        save_path : str
+            Path to save the extracted MRI slab.
+        n_cuts : int, optional
+            Number of cuts to apply to the purple slab.
+        chosen_cut : str, optional
+            Chosen cut to extract from the purple slab. Options are 'S' (superior) or 'M' (middle) or 'I' (inferior).
+        overwrite : bool, optional
+            If True, recompute and overwrite existing files. If False, skip computation
+            if file already exists. Default is False.
+        """
+        purple_resliced_path = purple_slab_path.replace(".nii.gz", "_resliced.nii.gz")
+
+        greedy3d.execute('-d 3 '
+                    '-rf {} '
+                    '-rm {} {} '
+                    '-ri LABEL 0.2vox '
+                    '-r {} '.format(self.mri_path,
+                                    self.purple_segmentation, purple_resliced_path,
+                                    self.reslice_transform))
+
+        # Replace the ventricles label 8 with background label 0
+        c3d.execute('{} '
+            '-replace 8 0 '
+            '-o {} '.format(purple_resliced_path,
+                            purple_resliced_path))
+
+
+        brainmold_slab_path = os.path.join(self.brainmold_path, f"*_slab{slab_num:02d}_mask_with_dots.nii.gz")
+        brainmold_slab_file = glob.glob(brainmold_slab_path)[0]
+
+        c3d.execute(f'{brainmold_slab_file} -pad 0x10x0 0x10x0 0')
+
+        padded_slab = c3d.pop()
+        sitk.WriteImage(padded_slab, "tmp_padded_slab.nii.gz")
+        c3d.execute(f'tmp_padded_slab.nii.gz {purple_resliced_path} -reslice-identity')
+
+        extracted_slab = c3d.pop()
+
+        if overwrite or not os.path.exists(purple_slab_path):
+            sitk.WriteImage(extracted_slab, purple_slab_path)
+
+        os.remove("tmp_padded_slab.nii.gz")
+
+        # Binarize the purple slab
+        binary_path = purple_slab_path.replace(".nii.gz", "_binary.nii.gz")
+        if overwrite or not os.path.exists(binary_path):
+            self._binarize_purple_slab(purple_slab_path, binary_path)
+
+        # Apply graph cut to the binary purple slab
+        chunk_path = purple_slab_path.replace(".nii.gz", "_chunk.nii.gz")
+        if overwrite or not os.path.exists(chunk_path):
+            self._apply_graph_cut_to_purple_slab(binary_path, chunk_path, n_cuts)
+
+        # Get the chunk label
+        chunk_label = self._get_chunk_label(chunk_path, n_cuts, chosen_cut)
+
+        cut_path = purple_slab_path.replace(".nii.gz", f"_cut.nii.gz")
+        if overwrite or not os.path.exists(cut_path):
+            self._get_purple_cut_slab(chunk_path, chunk_label, cut_path)
+
+        os.remove(purple_resliced_path)

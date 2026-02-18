@@ -31,9 +31,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixed", type=str, required=True, help="Path to fixed image (histology)")
     parser.add_argument("--moving", type=str, required=True, help="Path to moving image (MRI)")
+    parser.add_argument("--purple_segmentation", type=str, required=True, help="Path to purple segmentation")
+    parser.add_argument("--reslice_transform", type=str, required=True, help="Path to reslice transform")
     parser.add_argument("--brainmold_path", type=str, required=True, help="Path to brainmold slabs")
     parser.add_argument("--slab_num", type=int, required=True, help="Slab number")
     parser.add_argument("--working_dir", type=str, required=True, help="Working directory")
+    parser.add_argument("--n_cuts", type=int, default=2, help="Number of cuts in the purple slab")
+    parser.add_argument("--chosen_cut", type=str, default='S', help="Which cut to use (S/M/I)")
     parser.add_argument("--overwrite", action="store_true", help="Recompute and overwrite existing files")
     args = parser.parse_args()
 
@@ -58,13 +62,16 @@ if __name__ == "__main__":
     os.makedirs(mri_path, exist_ok=True)
 
     # Load data
-    mri_data = MRIData(args.moving)
+    mri_data = MRIData(args.moving, args.purple_segmentation, args.reslice_transform, brainmold_path)
     histology_data = HistologyData(args.fixed)
 
     # Extract the slab from whole hemisphere MRI
     mri_slab_path = os.path.join(mri_path, f"mri_slab.nii.gz")
-    # mri_data.get_mri_slab(slab_num, save_path=mri_slab_path, return_img=False)
-    mri_data.get_mri_slab_from_brainmold(slab_num, brainmold_path=brainmold_path, save_path=mri_slab_path, overwrite=overwrite)
+    mri_data.get_mri_slab_from_brainmold(slab_num, save_path=mri_slab_path, overwrite=overwrite)
+
+    # Process the purple slab
+    purple_slab_path = os.path.join(mri_path, "purple_slab.nii.gz")
+    mri_data.process_purple_slab(slab_num, purple_slab_path, n_cuts=args.n_cuts, chosen_cut=args.chosen_cut, overwrite=overwrite)
 
     # Preprocess histology
     histology_data.preprocess_histology(channel=0, base_dir=histology_path, overwrite=overwrite)
@@ -74,6 +81,9 @@ if __name__ == "__main__":
 
     # Create initial alignment using image centers
     processor.create_initial_alignment(overwrite=overwrite)
+
+    # Perform purple moments registration
+    processor.purple_moments_registration(overwrite=overwrite)
 
     # Save manual itksnap workspace
     print(f"Saving manual itksnap workspace...")

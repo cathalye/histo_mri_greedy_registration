@@ -25,6 +25,20 @@ for specimen_dir in "$DATA_DIR"/INDD*/; do
         continue
     fi
 
+    # Find the purple segmentation file
+    purple_seg_file=$(find "$specimen_dir" -maxdepth 1 -name "*purple_segmentation*.nii.gz" -type f | head -1)
+    if [[ -z "$purple_seg_file" ]]; then
+        echo "  Warning: No purple segmentation file found for specimen $specimen"
+        continue
+    fi
+
+    # Find the reslice transform file
+    reslice_transform_file=$(find "$specimen_dir" -maxdepth 1 -name "*_reslice.mat" -type f | head -1)
+    if [[ -z "$reslice_transform_file" ]]; then
+        echo "  Warning: No reslice transform file found for specimen $specimen"
+        continue
+    fi
+
     # Loop through slab directories within each specimen
     for slab_dir in "$specimen_dir"slab*/; do
         # Skip if not a directory
@@ -36,8 +50,10 @@ for specimen_dir in "$DATA_DIR"/INDD*/; do
         slab_name=$(basename "$slab_dir")
         # Extract slab number from slab name (first two digits only)
         slab_number=$(echo "$slab_name" | sed 's/slab//' | sed 's/[^0-9]//g' | head -c 2)
+        # Extract cut from slab name (last letter)
+        chosen_cut=$(echo "$slab_name" | sed 's/.*\([A-Za-z]\)$/\1/')
 
-        echo "Processing slab: $slab_name"
+        echo "Processing slab: $slab_name (cut: $chosen_cut)"
 
         # Find the histology file (LFBCV_*)
         histo_file=$(find "$slab_dir" -maxdepth 1 -name "LFBCV_*" -type f)
@@ -52,9 +68,13 @@ for specimen_dir in "$DATA_DIR"/INDD*/; do
 
         python initial_alignment.py --fixed "$histo_path" \
          --moving "$mri_path" \
+         --purple_segmentation "$purple_seg_file" \
+         --reslice_transform "$reslice_transform_file" \
          --brainmold_path "$brainmold_path" \
          --working_dir "$work_dir" \
-         --slab_num "$slab_number"
+         --slab_num "$slab_number" \
+         --n_cuts 2 \
+         --chosen_cut "$chosen_cut"
 
     done
 done

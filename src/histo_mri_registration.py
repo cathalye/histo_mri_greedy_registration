@@ -3,9 +3,14 @@ import subprocess
 
 import numpy as np
 import SimpleITK as sitk
-from picsl_greedy import Greedy3D
 
+from picsl_c3d import Convert3D, Convert2D
+c3d = Convert3D()
+c2d = Convert2D()
+
+from picsl_greedy import Greedy3D, Greedy2D
 greedy = Greedy3D()
+greedy2d = Greedy2D()
 
 
 class HistoMRIRegistration:
@@ -45,14 +50,20 @@ class HistoMRIRegistration:
         # Paths to all files for registration
         self.base_dir = base_dir
         self.mri_slab_path = os.path.join(base_dir, f"mri/mri_slab.nii.gz")
+        self.purple_cut_slab_path = os.path.join(base_dir, f"mri/purple_slab_cut.nii.gz")
         self.histo_resampled_path = os.path.join(base_dir, "histology/historef_resampled.nii.gz")
         self.histo_lowres_mask_path = os.path.join(base_dir, "histology/historef_lowres_mask.nii.gz")
+        self.histo_mask_path = os.path.join(base_dir, "histology/historef_binary_mask.nii.gz")
 
         # Transforms
         self.centers_init_transform_path = os.path.join(base_dir, "transforms/centers_init.mat")
         self.manual_init_workspace_path = os.path.join(base_dir, "manual/manual_init.itksnap")
         self.manual_result_workspace_path = os.path.join(base_dir, "manual/manual_init_result.itksnap")
         self.manual_init_transform_path = os.path.join(base_dir, "transforms/manual_init.mat")
+
+        self.purple_moments_transform_path = os.path.join(base_dir, "transforms/purple_moments.mat")
+        self.purple_rigid_transform_path = os.path.join(base_dir, "transforms/purple_rigid.mat")
+
         self.rigid_transform_path = os.path.join(base_dir, "transforms/rigid.mat")
         self.affine_transform_path = os.path.join(base_dir, "transforms/affine.mat")
         self.deformable_transform_path = os.path.join(base_dir, "transforms/deformable.mhd")
@@ -65,6 +76,30 @@ class HistoMRIRegistration:
 
         # ITK-SNAP workspace
         self.results_workspace_path = os.path.join(base_dir, "results.itksnap")
+
+
+    def _convert_2d_to_3d_transform(self, input_2d_path, output_3d_path):
+        """
+        Convert a 2D affine transform (3x3) to 3D (4x4) by embedding in XY plane.
+
+        The 3x3 matrix:
+            [a b tx]
+            [c d ty]
+            [0 0 1 ]
+
+        Becomes the 4x4 matrix:
+            [a b 0 tx]
+            [c d 0 ty]
+            [0 0 1 0 ]
+            [0 0 0 1 ]
+        """
+        mat_2d = np.loadtxt(input_2d_path)
+
+        mat_3d = np.eye(4)
+        mat_3d[0:2, 0:2] = mat_2d[0:2, 0:2]
+        mat_3d[0:2, 3] = mat_2d[0:2, 2]
+
+        np.savetxt(output_3d_path, mat_3d, fmt='%.6f')
 
 
     def _get_physical_center_of_image(self, image, c3d=True):
@@ -236,6 +271,56 @@ class HistoMRIRegistration:
             f"itksnap-wt -i {self.manual_result_workspace_path} -lp 1 -props-get-transform | grep '3>' | sed -e 's/3> //g' > {self.manual_init_transform_path}",
             shell=True, stdout=subprocess.DEVNULL
             )
+
+
+    def purple_moments_registration(self, overwrite=False):
+        if not overwrite and os.path.exists(self.purple_moments_transform_path):
+            return
+
+        # Align the purple cut slab to the histology mask using moments of inertia
+        greedy.execute('-d 3 '
+                    '-i {} {} '
+                    '-moments 2 '
+                    '-o {} '.format(self.histo_mask_path, self.purple_cut_slab_path,
+                                    self.purple_moments_transform_path))
+
+        tmp_padded_histo_mask_path = self.histo_mask_path.replace(".nii.gz", "_padded.nii.gz")
+        c2d.execute('{} '
+                    '-pad 200x200 200x200 0 '
+                    '-o {} '.format(self.histo_mask_path,
+                            tmp_padded_histo_mask_path))
+
+        purple_cut_slab_2d_path = self.purple_cut_slab_path.replace(".nii.gz", "_2d.nii.gz")
+        greedy.execute('-d 3 '
+                       '-rf {} '
+                       '-rm {} {} '
+                       '-r {} '.format(tmp_padded_histo_mask_path,
+                                       self.purple_cut_slab_path, purple_cut_slab_2d_path,
+                                       self.purple_moments_transform_path))
+
+        os.remove(tmp_padded_histo_mask_path)
+
+        purple_rigid_2d_path = self.purple_rigid_transform_path.replace(".mat", "_2d.mat")
+        greedy2d.execute('-d 2 -a '
+                        '-dof 6 '
+                        '-i {} {} '
+                        '-o {} '
+                        '-search 1000 flip 1.0 '
+                        '-n 100x50x10x10x10 '
+                        '-m NCC 4x4 '.format(self.histo_mask_path, purple_cut_slab_2d_path,
+                                            purple_rigid_2d_path))
+
+        # Convert 2D (3x3) transform to 3D (4x4)
+        purple_rigid_3d_path = self.purple_rigid_transform_path.replace(".mat", "_3d.mat")
+        self._convert_2d_to_3d_transform(purple_rigid_2d_path, purple_rigid_3d_path)
+
+        # Compose: purple_rigid_3d with purple_moments to get final transform
+        # Order: first apply moments, then apply 2D refinement
+        subprocess.run(
+            f"c3d_affine_tool {self.purple_moments_transform_path} {purple_rigid_3d_path} "
+            f"-mult -o {self.purple_rigid_transform_path}",
+            shell=True, stdout=subprocess.DEVNULL
+        )
 
 
     def rigid_registration(self, overwrite=False):
