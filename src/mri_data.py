@@ -331,6 +331,25 @@ class MRIData:
 
 
     def _get_chunk_label(self, chunk_path, n_cuts=2, chosen_cut='S'):
+        """
+        Get the chunk label from the chunk slab.
+        - If superior cut then choose the non-background label in upper third
+        - If inferior cut then choose the non-background label in lower third
+        - Doesn't work for 3 cuts. But that's a rare case.
+
+        Parameters
+        ----------
+        chunk_path : str
+            Path to the chunk slab.
+        n_cuts : int, optional
+            Number of cuts to apply to the purple slab.
+        chosen_cut : str, optional
+            Chosen cut to extract from the purple slab. Options are 'S' (superior) or 'M' (middle) or 'I' (inferior).
+        Returns
+        -------
+        int
+            The chunk label.
+        """
         chunk_mask = sitk.ReadImage(chunk_path)
         data = sitk.GetArrayFromImage(chunk_mask)
         z_size = data.shape[2]

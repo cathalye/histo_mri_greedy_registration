@@ -29,7 +29,7 @@ class HistoMRIRegistration:
     as the similarity metric.
     """
 
-    def __init__(self, base_dir):
+    def __init__(self, base_dir, initial="manual"):
         """
         Initialize the registration processor with file paths.
 
@@ -49,33 +49,40 @@ class HistoMRIRegistration:
         """
         # Paths to all files for registration
         self.base_dir = base_dir
+        self.initial = initial
         self.mri_slab_path = os.path.join(base_dir, f"mri/mri_slab.nii.gz")
         self.purple_cut_slab_path = os.path.join(base_dir, f"mri/purple_slab_cut.nii.gz")
         self.histo_resampled_path = os.path.join(base_dir, "histology/historef_resampled.nii.gz")
         self.histo_lowres_mask_path = os.path.join(base_dir, "histology/historef_lowres_mask.nii.gz")
         self.histo_mask_path = os.path.join(base_dir, "histology/historef_binary_mask.nii.gz")
 
+        # Initialization
+        self.centers_init_transform_path = os.path.join(base_dir, "initialization/centers_init.mat")
+        # Manual initialization
+        self.manual_init_workspace_path = os.path.join(base_dir, "initialization/manual_init.itksnap")
+        self.manual_result_workspace_path = os.path.join(base_dir, "initialization/manual_init_result.itksnap")
+        self.manual_init_transform_path = os.path.join(base_dir, "initialization/manual_init_transform.mat")
+        self.manual_result_path = os.path.join(base_dir, "initialization/manual_result.nii.gz")
+
+        # Purple moments registration initialization
+        self.purple_moments_transform_path = os.path.join(base_dir, "initialization/purple_moments.mat")
+        self.purple_rigid_transform_path = os.path.join(base_dir, "initialization/purple_rigid.mat")
+        self.purple_moments_workspace_path = os.path.join(base_dir, "initialization/purple_result.itksnap")
+        self.purple_result_path = os.path.join(base_dir, "initialization/purple_result.nii.gz")
+
+        results_path = os.path.join(base_dir, f"greedy_{self.initial}_results")
+        os.makedirs(results_path, exist_ok=True)
         # Transforms
-        self.centers_init_transform_path = os.path.join(base_dir, "transforms/centers_init.mat")
-        self.manual_init_workspace_path = os.path.join(base_dir, "manual/manual_init.itksnap")
-        self.manual_result_workspace_path = os.path.join(base_dir, "manual/manual_init_result.itksnap")
-        self.manual_init_transform_path = os.path.join(base_dir, "transforms/manual_init.mat")
-
-        self.purple_moments_transform_path = os.path.join(base_dir, "transforms/purple_moments.mat")
-        self.purple_rigid_transform_path = os.path.join(base_dir, "transforms/purple_rigid.mat")
-
-        self.rigid_transform_path = os.path.join(base_dir, "transforms/rigid.mat")
-        self.affine_transform_path = os.path.join(base_dir, "transforms/affine.mat")
-        self.deformable_transform_path = os.path.join(base_dir, "transforms/deformable.mhd")
-
+        self.rigid_transform_path = os.path.join(results_path, "rigid.mat")
+        self.affine_transform_path = os.path.join(results_path, "affine.mat")
+        self.deformable_transform_path = os.path.join(results_path, "deformable.mhd")
         # Resliced images for each step
-        self.manual_result_path = os.path.join(base_dir, "manual_result.nii.gz")
-        self.rigid_result_path = os.path.join(base_dir, "rigid_result.nii.gz")
-        self.affine_result_path = os.path.join(base_dir, "affine_result.nii.gz")
-        self.deformable_result_path = os.path.join(base_dir, "deformable_result.nii.gz")
+        self.rigid_result_path = os.path.join(results_path, "rigid_result.nii.gz")
+        self.affine_result_path = os.path.join(results_path, "affine_result.nii.gz")
+        self.deformable_result_path = os.path.join(results_path, "deformable_result.nii.gz")
 
         # ITK-SNAP workspace
-        self.results_workspace_path = os.path.join(base_dir, "results.itksnap")
+        self.results_workspace_path = os.path.join(base_dir, f"greedy_{self.initial}_results.itksnap")
 
 
     def _convert_2d_to_3d_transform(self, input_2d_path, output_3d_path):
@@ -323,6 +330,30 @@ class HistoMRIRegistration:
         )
 
 
+    def save_purple_moments_itksnap_workspace(self, overwrite=False):
+        """
+        Create an ITK-SNAP workspace for purple moments registration.
+        """
+        if not overwrite and os.path.exists(self.purple_moments_workspace_path):
+            return
+
+        greedy.execute('-d 3 '
+                       '-rf {} '
+                       '-rm {} {} '
+                       '-r {} '.format(self.histo_resampled_path,
+                                       self.mri_slab_path, self.purple_result_path,
+                                       self.purple_rigid_transform_path))
+
+        subprocess.run([
+            "itksnap-wt",
+                "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
+                "-layers-add-anat", self.mri_slab_path, "-psn", "Moving image", "-props-set-transform", self.purple_rigid_transform_path,
+                "-layers-add-seg", self.histo_lowres_mask_path,
+                "-o", self.purple_moments_workspace_path
+                ], stdout=subprocess.DEVNULL
+           )
+
+
     def rigid_registration(self, overwrite=False):
         """
         Perform rigid body registration (6 degrees of freedom).
@@ -352,6 +383,13 @@ class HistoMRIRegistration:
         if not overwrite and os.path.exists(self.rigid_transform_path):
             return
 
+        if self.initial == "manual":
+            initial_transform_path = self.manual_init_transform_path
+        elif self.initial == "purple":
+            initial_transform_path = self.purple_rigid_transform_path
+        else:
+            raise ValueError(f"Invalid initial transform: {self.initial}")
+
         greedy.execute('-d 3 '
                        '-z '
                        '-a -dof 7 '
@@ -363,7 +401,7 @@ class HistoMRIRegistration:
                        '-n 100x100x80 '
                        '-o {} '.format(self.histo_resampled_path, self.mri_slab_path,
                                        self.histo_lowres_mask_path,
-                                       self.manual_init_transform_path,
+                                       initial_transform_path,
                                        self.rigid_transform_path)
                        )
 
@@ -529,15 +567,27 @@ class HistoMRIRegistration:
                            )
 
         # Create results workspace
+        if self.initial == "manual":
+            layers = [
+                "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
+                "-layers-add-anat", self.deformable_result_path, "-psn", "MRI (deformable)",
+                "-layers-add-anat", self.affine_result_path, "-psn", "MRI (affine)",
+                "-layers-add-anat", self.rigid_result_path, "-psn", "MRI (rigid)",
+                "-layers-add-anat", self.manual_result_path, "-psn", "MRI (manual)",
+            ]
+        elif self.initial == "purple":
+            layers = [
+                "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
+                "-layers-add-anat", self.deformable_result_path, "-psn", "MRI (deformable)",
+                "-layers-add-anat", self.affine_result_path, "-psn", "MRI (affine)",
+                "-layers-add-anat", self.rigid_result_path, "-psn", "MRI (rigid)",
+                "-layers-add-anat", self.purple_result_path, "-psn", "MRI (purple)",
+            ]
         if overwrite or not os.path.exists(self.results_workspace_path):
             subprocess.run([
                 "itksnap-wt",
-                    "-layers-add-anat", self.histo_resampled_path, "-psn", "Fixed image",
-                    "-layers-add-anat", self.deformable_result_path, "-psn", "MRI (deformable)",
-                    "-layers-add-anat", self.affine_result_path, "-psn", "MRI (affine)",
-                    "-layers-add-anat", self.rigid_result_path, "-psn", "MRI (rigid)",
-                    "-layers-add-anat", self.manual_result_path, "-psn", "MRI (manual)",
-                    "-layers-add-seg", self.histo_lowres_mask_path, "-psn", "Mask",
-                    "-o", self.results_workspace_path
+                *layers,
+                "-layers-add-seg", self.histo_lowres_mask_path, "-psn", "Mask",
+                "-o", self.results_workspace_path
             ], stdout=subprocess.DEVNULL
             )

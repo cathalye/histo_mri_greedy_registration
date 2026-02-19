@@ -52,11 +52,8 @@ if __name__ == "__main__":
     histology_path = os.path.join(working_dir, "histology")
     os.makedirs(histology_path, exist_ok=True)
     # Create a subdirectory for the manual initialization
-    manual_init_path = os.path.join(working_dir, "manual")
-    os.makedirs(manual_init_path, exist_ok=True)
-    # Create a subdirectory for the transforms
-    transforms_path = os.path.join(working_dir, "transforms")
-    os.makedirs(transforms_path, exist_ok=True)
+    init_path = os.path.join(working_dir, "initialization")
+    os.makedirs(init_path, exist_ok=True)
     # Create a subdirectory for the MRI data
     mri_path =os.path.join(working_dir, "mri")
     os.makedirs(mri_path, exist_ok=True)
@@ -84,6 +81,7 @@ if __name__ == "__main__":
 
     # Perform purple moments registration
     processor.purple_moments_registration(overwrite=overwrite)
+    processor.save_purple_moments_itksnap_workspace(overwrite=overwrite)
 
     # Save manual itksnap workspace
     print(f"Saving manual itksnap workspace...")
